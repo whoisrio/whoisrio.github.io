@@ -1,0 +1,207 @@
+---
+layout: post
+title:  "国产模型新王-GLM5.2，做了哪些注意力机制的改进"
+date:   2026-06-19 23:50:31 +0800
+categories: attention
+math: true
+---
+
+
+
+GLM-5.2 在多个主流 benchmark 上逼近闭源SOTA，同时单token算力需求下降2.9倍。
+![glm5.2-performance](https://z-cdn-media.chatglm.cn/prompts-rich-media-resources/5.2-blog/20260617-012836.png)
+
+GLM-5.2在架构上的主要改进是引入了Index Cache，一方面进一步降低了DSA注意力计算的成本，另一方面也提升了MTP的质量，配合TV损失优化将MTP的接受长度提升了20%
+
+![GLM5.2-arch](https://z-cdn-media.chatglm.cn/prompts-rich-media-resources/5.2-blog/20260617-013338.png)
+
+今天就来聊一聊Index Cache
+
+---
+
+# IndexCache
+
+## Lightning Indexer
+DeepSeek-V3.2 引入的 DSA（DeepSeek Sparse Attention），提出了 **Lightning Indexer**（闪电索引器），一个维度远低于标准注意力的「轻量级」打分层。它的任务是快速评估当前 token 与所有前序 token 的相关性，排除掉绝对不相关的，只保留 top-K。
+
+![lightening_indexer](https://cdn.jsdelivr.net/gh/riodong20/rio-image-bed/images/lightening_indexer_pick_token.excalidraw.png)
+
+DSA 极大地减少了注意力计算的计算量，从 $O(L^2) \Rightarrow O(LK)$，不过 Lightning Indexer 本身仍然是 $O(L^2)$，并且每一层注意力隐藏层都保有自己的 Lightning Indexer，现有模型的层数深度越来越深，叠加起来 Lightning Indexer 本身占用的显存空间仍然不少。
+
+IndexCache 将注意力层分为 **F（Full）和 S（Share）**，只在 F 层通过 Lightning Indexer 来筛选相关 token，S 层则直接继承最相邻的 F 层筛选的 token 进行注意力计算。这样，不仅减少了 Lightning Indexer 本身的空间占用，也将筛选相关 token 的计算量降低为原来的 1/4(保留N/4的F)。
+
+原始的DSA筛选TOKEN，
+```
+Require: Input X, layers 1 . . . N
+1: for ℓ = 1 to N do
+2:    I(ℓ) ← INDEXERℓ(X)
+3:    T(ℓ) ← Top-k(I(ℓ))
+4:    X ← SPARSEATTNℓ(X, T(ℓ))
+5:    X ← FFNℓ(X) ▷ + norm, residual, etc.
+6: end for
+```
+
+
+如果$cl$ 是$S$ ，那么直接复用$F$ 的INDEXER筛选的相关token
+T(ℓ) ← Tcache ▷ reuse
+```
+Require: Input X, layers 1 . . . N, pattern c
+1: for ℓ = 1 to N do
+2:     if cℓ = F then
+3:         I(ℓ) ← INDEXERℓ(X)
+4:         T(ℓ) ← Top-k(I(ℓ))
+5:         Tcache ← T (ℓ)
+6:     else {cℓ = S}
+7:         T(ℓ) ← Tcache ▷ reuse
+8:     end if
+9:     X ← SPARSEATTNℓ(X, T(ℓ))
+10:    X ← FFNℓ(X) ▷ + norm, residual, etc.
+11:end for
+```
+
+## 如何确定注意力层是F还是S呢 ? 
+
+GLM的论文提出了两种方式，来划分注意力层的索引器是Full还是Share。
+
+### 免训练 
+首先是免训练。
+
+方式1: Uniform划分
+即直接按照索引器缩减目标划分为FSFS(1/2)或者FSSSFSSS...(1/4)，这种方式简单粗暴，效果也是最差的。
+
+方式2: greedy-search贪心搜索
+初始时，所有层都是作为F，也就是标准的DSA；
+而后，除第一层固定为F外，后续的逐层，逐步验证其作为S时与全F时的误差(按照GLM5.2的做法，目标是把$\frac{3}{4}*N$层的索引器都置为S)，取误差最小的组合:
+
+1. **试探性翻转**：将其中一层尝试改为 **S**，计算此时模型在校准集上的 **LM Loss（语言模型损失）**。
+2. **确定并提交**：在所有候选层中，找到让损失增加最小（即误差最小）的那一层，将其**永久性**地从 F 翻转为 S。
+3. 重复上述过程，直到达到预设的 S 层数量 K
+
+如果是全量检索，那么就需要进行$\frac{N*(N-1)}{2}$次前向传播计算，实际计算时，是将N个注意力层分为了P组，取每一组的最佳组合。
+
+Table 2: Training-free IndexCache at 1/2, 1/4, and 1/8 indexer retention. ‘Long’ and ‘G&R’ aggregate benchmark scores. We compare uniform interleaving against searched patterns.
+![Table 2: Training-free IndexCache at 1/2, 1/4, and 1/8 indexer retention. ‘Long’ and ‘G&R’ aggregate benchmark scores. We compare uniform interleaving against searched patterns.](https://cdn.jsdelivr.net/gh/riodong20/rio-image-bed/images/PixPin_2026-06-19_18-44-37.png)
+
+
+### 预训练
+而后是在预训练阶段同时训练好索引器的参数，每层直接按照目标划分FSSSFSSS，即Uniform划分，但是索引器的参数要通过跨层的损失函数定义来优化。
+简单来说，在标准的DSA训练阶段，每一层的标准注意力训练每一层的Lightning Indexer，损失只考虑当前层； 在Indexer Cache的设定下，F后面的m层直接复用前序的F层索引器筛选的token，因此损失函数是F + 3个S层的共同损失(按照1F3S的方式)
+
+$$
+L_{multi}^I​=\sum_{j=0} \frac{1}{m+1} \sum{D_{KL}​(pt(ℓ+j)​∥qt(ℓ)}​​)
+$$
+从GLM提供的数据上看，共用索引器的效果要优于标准的DSA。
+
+
+Table 3: Training-aware IndexCache at 1/2 and 1/4 indexer retention with uniform interleaving. w/ searched pattern: the greedy-searched pattern replaces uniform interleaving. w/o cross-layer loss: each indexer is distilled only against its own layer
+![Table 3: Training-aware IndexCache at 1/2 and 1/4 indexer retention with uniform interleaving. w/ searched pattern: the greedy-searched pattern replaces uniform interleaving. w/o cross-layer loss: each indexer is distilled only against its own layer.](https://cdn.jsdelivr.net/gh/riodong20/rio-image-bed/images/PixPin_2026-06-19_18-44-01.png)
+
+这几组数据的解释如下:
+
+1/2 Unif.Index Cache 用1/2 均匀分布蒸馏训练的索引器，表现与标准的DSA是很接近的，在不少数据验证集上的效果甚至好于标准DSA；
+w/ searched pattern，在1/2蒸馏下采用贪心搜索调整indexcache的F分布，效果并没有比原始蒸馏的更好；
+w/o cross-layer loss，即单层蒸馏，既使用KL散度训练索引器，又通过LM 损失进行了对齐，但是效果并不好；
+
+
+>如果进一步减少indexer到1/8，模型质量就会出现明显下降
+
+
+1/4 Unif.index Cache 用1/4 均为分布蒸馏训练的索引器，表现没有一项是最顶的，但是效果和 1/2 Unif.IndexCache 非常接近，且索引器所占空间和token筛选计算量相对于 1/2 再砍半。**1/4 模式在省掉更多算力的同时，依然能保持“生产级”的准确率**，这也是GLM5.2所采用的IndexCache的方式。
+
+---
+
+## MTP 的优化
+
+### MTP 是什么，怎么用？
+
+传统 LLM 推理是"自回归"的：每生成一个 token，就要跑一次完整的模型前向传播，串行逐个生成，速度受限于内存带宽。
+
+MTP（Multi-Token Prediction，多令牌预测）的核心思想是：**让模型一次预测接下来好几个 token，而不只是一个**。GLM-5.2 的做法是：在 backbone 之上叠一个轻量的 MTP 层，参数在 7 个预测步之间共享，串行生成 7 个候选 token——这个过程叫**推测解码（Speculative Decoding）**：
+- MTP 层充当"草稿模型"，快速生成一批候选 token
+- 主模型（target model）一次性验证这 7 个 token：每个 token 看一眼，决定接受还是拒绝
+- 接受的部分直接输出，拒绝的位置开始重新生成
+
+如果接受率高，相当于一次前向传播输出了多个正确 token，吞吐量成倍提升。
+
+---
+
+### IndexCache 如何帮到 MTP
+
+GLM-5.2 的 IndexCache 技术从两个层面直接提升了 MTP 的推测解码效果。要理解它，得先搞清楚 MTP 层在推理时到底在做什么。
+
+**MTP 层的实际工作方式**
+
+GLM-5.2 的 MTP 是一个**轻量 transformer 层，串行跑 7 步**（multi-step），每一步生成一个候选 token，且所有步**共享同一份参数**。
+
+流程是这样的：
+1. target model（主模型）跑完，输出隐藏状态序列 $h_1$ 到 $h_4$
+2. MTP 层第 1 步：拿 $h_1$~$h_4$，生成第一个草稿 token 的隐藏状态 $h_5$
+3. MTP 层第 2 步：拿 $h_5$（上一步 MTP 层自己算出来的），生成第二个草稿 token 的隐藏状态 $h_6$
+4. 依次串行，共 7 步，生成 7 个候选 token
+
+MTP 层本身也是一个 transformer 层，它内部也要跑注意力，需要 KV cache。
+
+**问题在这里：训练-推理的 KV cache 不一致**
+
+训练时，MTP 层的输入是 ground-truth token 的隐藏状态，所有隐藏状态都来自 target model，MTP 层内部的 KV cache 来源是干净的。
+
+推理时，上面第 2 步及以后，MTP 层的输入里混进了**自己生成的隐藏状态**（$h_5, h_6, ...$）。这些隐藏状态对应的 KV 也被写进了 KV cache。于是：
+
+> $h_5$ 的 KV cache = kv₁~₄（来自 target model） + kv₅（来自 MTP 层自己）
+
+KV cache 变成了一个**混合体**。训练时根本不存在这种混合，MTP 层没学过怎么处理这种输入分布，推理时它的输出分布就偏了，接受率下降。
+
+**KVShare + IndexShare 如何修复**
+
+具体做法依赖 IndexShare：让 MTP 第 2 步及以后，**复用第 1 步的 top-k 索引**。这个索引里只包含位置 1~4 的 token，所以第 2 步的注意力**只能 attend 到 $h_1$~$h_4$，不能 attend 到 $h_5$（自身）**。
+
+既然不能 attend 到自身，$h_5$ 的 KV cache 里就**根本不需要存 kv₅**——attend 不到，存了也没用。于是 KV cache 里只剩下 kv₁~₄，全部来自 target model。
+
+训练时也做同样的事：复用第 1 个 MTP step 的 KV cache 和 top-k 索引。训练和推理的 KV cache 来源完全一致，分布偏移消失。
+
+**顺带的额外收益：省计算**
+
+IndexShare 让 7 个 MTP step 只跑一次 indexer（第 1 步跑，后续 6 步复用 top-k 索引），省掉了 6/7 的 indexer 计算量。MTP 草稿模型更轻，推测解码的整体延迟进一步降低。
+
+---
+
+### 进一步：用更好的训练目标巩固效果
+
+光有 IndexCache 还不够，GLM-5.2 还从训练目标层面做了优化，灵感来自 Bebop 论文：
+
+**为什么抛弃 CE/KL，改用 TV 损失？**
+
+推测解码的接受率，数学上等于**主模型输出分布 p 和 MTP 头输出分布 q 的重叠度**：
+
+$$
+\alpha = \sum_y \min(p(y), q(y)) = 1 - d_{TV}(p, q)
+$$
+
+这个量叫**总变分距离（Total Variation distance）**。而传统的 CE 或 KL 散度训练，并不能高效地最小化 TV 距离——KL 只能通过 Pinsker 不等式给出 TV 的上界，最小化 KL ≠ 最小化 TV。
+
+**端到端 TV 损失（e2e TV Loss）** 直接把上式作为损失函数，同时自动对更靠前的 MTP 步赋予更高权重（因为多步接受的期望是连乘，前面步骤更重要）。
+
+TV 训练把**熵-接受率斜率从 -1.68 压到了 -0.06**（降低 95% 以上），基本上解耦了接受率和熵的关系。接受长度相对 baseline 提升 20%，Agent 任务上接受率可达 97%。
+
+---
+
+### 最终效果
+
+GLM-5.2 在 GLM-5.1 骨干网络上做了消融实验（MTP 步数=7）：
+
+| 方法                     | 接受长度                  |
+| ---------------------- | --------------------- |
+| Baseline（GLM-5.1）      | 4.56                  |
+| + IndexShare + KVShare | 5.10                  |
+| + 拒绝采样                 | 5.29                  |
+| + 端到端 TV 损失            | 5.47（较 baseline +20%） |
+
+IndexCache 不仅是稀疏注意力的加速技术，也是 MTP 推测解码效果提升的关键支撑。
+
+
+## 参考资料
+
+- [IndexCache: Accelerating Sparse Attention via Cross-Layer Index Reuse](https://arxiv.org/pdf/2603.12201)
+- [z.ai blog - GLM-5.2](https://z.ai/blog/glm-5.2)
+- [Breaking Entropy Bounds: Accelerating RL Training via MTP with Rejection Sampling](https://arxiv.org/abs/2606.12370)
+
