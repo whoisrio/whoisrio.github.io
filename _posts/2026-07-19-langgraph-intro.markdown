@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "LangGraph 简介：为什么用、核心概念与高级控制"
-date:   2026-08-05 22:00:00 +0800
+date:   2026-07-19 10:46:17 +0800
 categories: [LangGraph]
 tags: [LangGraph, Agent, 工作流]
 ---

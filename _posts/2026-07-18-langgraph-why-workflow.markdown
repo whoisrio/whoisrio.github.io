@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "为什么还需要工作流"
-date:   2026-08-05 22:30:00 +0800
+date:   2026-07-18 23:27:02 +0800
 categories: [LangGraph]
 tags: [LangGraph, 工作流, Agent, Workflow]
 ---
