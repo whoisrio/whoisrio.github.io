@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "事件驱动的 Agent（四）：会话与真相 —— log、投影与异常恢复"
+title:  "手搓agent（四）：会话与真相 —— log、投影与异常恢复"
 date:   2026-10-15 11:52:00 +0800
 categories: [Agent]
 tags: [Agent, 事件驱动, EventBus, Agent Loop, Trajectory, 会话, 压缩, 异常恢复]
@@ -8,7 +8,7 @@ tags: [Agent, 事件驱动, EventBus, Agent Loop, Trajectory, 会话, 压缩, �
 
 # Stage 4：会话与真相 —— log、投影与异常恢复
 
-> 系列上一篇：[事件驱动的 Agent（三）：打断与转向](/posts/event-driven-agent-03-interrupt/)
+> 系列上一篇：[手搓agent（三）：打断与转向](/posts/event-driven-agent-03-interrupt/)
 
 
 > 配套代码：`src/baby_event_driven_agent/stages/stage04_trajectory/`（完整代码见 GitHub 仓库 [whoisrio/agent-cookbook](https://github.com/whoisrio/agent-cookbook/tree/main/src/baby_event_driven_agent/stages/stage04_trajectory)），

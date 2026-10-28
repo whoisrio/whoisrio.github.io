@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "事件驱动的 Agent（一）：只是接收事件"
+title:  "手搓agent（一）：事件驱动——只是接收事件"
 date:   2026-09-09 16:12:01 +0800
 categories: [Agent]
 tags: [Agent, 事件驱动, EventBus, Agent Loop]

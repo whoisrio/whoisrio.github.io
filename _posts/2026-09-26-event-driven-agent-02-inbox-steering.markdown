@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "事件驱动的 Agent（二）：收件箱 + 总线分方向"
+title:  "手搓agent（二）：收件箱 + 总线分方向"
 date:   2026-09-26 16:30:00 +0800
 categories: [Agent]
 tags: [Agent, 事件驱动, EventBus, Agent Loop, 收件箱, Steering]
@@ -8,7 +8,7 @@ tags: [Agent, 事件驱动, EventBus, Agent Loop, 收件箱, Steering]
 
 # Stage 2：收件箱 + 总线分方向
 
-> 系列上一篇：[事件驱动的 Agent（一）：只是接收事件](/posts/event-driven-agent-01-receive-events/)
+> 系列上一篇：[手搓agent（一）：事件驱动——只是接收事件](/posts/event-driven-agent-01-receive-events/)
 
 
 > 配套代码：`src/baby_event_driven_agent/stages/stage02_inbox_steering/`（完整代码见 GitHub 仓库 [whoisrio/agent-cookbook](https://github.com/whoisrio/agent-cookbook/tree/main/src/baby_event_driven_agent/stages/stage02_inbox_steering)），

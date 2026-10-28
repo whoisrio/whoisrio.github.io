@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "事件驱动的 Agent（三）：打断与转向"
+title:  "手搓agent（三）：打断与转向"
 date:   2026-09-30 17:13:00 +0800
 categories: [Agent]
 tags: [Agent, 事件驱动, EventBus, Agent Loop, 打断, Interrupt, Redirect]
@@ -8,7 +8,7 @@ tags: [Agent, 事件驱动, EventBus, Agent Loop, 打断, Interrupt, Redirect]
 
 # Stage 3：打断与转向（interrupt + redirect）
 
-> 系列上一篇：[事件驱动的 Agent（二）：收件箱 + 总线分方向](/posts/event-driven-agent-02-inbox-steering/)
+> 系列上一篇：[手搓agent（二）：收件箱 + 总线分方向](/posts/event-driven-agent-02-inbox-steering/)
 
 
 > 配套代码：`src/baby_event_driven_agent/stages/stage03_interrupt/`（完整代码见 GitHub 仓库 [whoisrio/agent-cookbook](https://github.com/whoisrio/agent-cookbook/tree/main/src/baby_event_driven_agent/stages/stage03_interrupt)），
